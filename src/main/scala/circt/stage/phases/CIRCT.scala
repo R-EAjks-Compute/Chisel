@@ -125,8 +125,6 @@ class CIRCT extends Phase {
 
   import Helpers._
 
-  import scala.sys.process._
-
   override def prerequisites = Seq(
     Dependency[circt.stage.phases.AddImplicitOutputFile]
   )
@@ -194,12 +192,19 @@ class CIRCT extends Phase {
     }
 
     // FIRRTL is serialized either in memory or to a file
-    val input: Either[Iterable[String], os.Path] =
+    val input: Either[Iterable[String], java.nio.file.Path] =
       if (circtOptions.dumpFir) {
-        val td = os.Path(stageOptions.targetDir, os.pwd)
+        val basePath = java.nio.file.Paths.get(stageOptions.targetDir)
+        val td = if (basePath.isAbsolute) basePath else java.nio.file.Paths.get(System.getProperty("user.dir")).resolve(basePath)
+        java.nio.file.Files.createDirectories(td)
         val filename = firrtlOptions.outputFileName.getOrElse(circuitName)
-        val firPath = td / s"$filename.fir"
-        os.write.over(firPath, serialization, createFolders = true)
+        val firPath = td.resolve(s"$filename.fir")
+        val writer = new java.io.PrintWriter(firPath.toFile)
+        try {
+          serialization.foreach(writer.println)
+        } finally {
+          writer.close()
+        }
         Right(firPath)
       } else {
         Left(serialization)
@@ -264,15 +269,49 @@ class CIRCT extends Phase {
     val stdoutStream, stderrStream = new java.io.ByteArrayOutputStream
     val stdoutWriter = new java.io.PrintWriter(stdoutStream)
     val stderrWriter = new java.io.PrintWriter(stderrStream)
-    val stdin: os.ProcessInput = input match {
-      case Left(it) => (it: os.Source) // Static cast to apply implicit conversion
-      case Right(_) => os.Pipe
-    }
-    val stdout = os.ProcessOutput.Readlines(stdoutWriter.println)
-    val stderr = os.ProcessOutput.Readlines(stderrWriter.println)
     val exitValue =
       try {
-        os.proc(cmd).call(check = false, stdin = stdin, stdout = stdout, stderr = stderr).exitCode
+        val pb = new java.lang.ProcessBuilder(cmd: _*)
+        val process = pb.start()
+
+        // Handle stdin - write input to process if needed
+        input match {
+          case Left(it) =>
+            val stdinWriter = new java.io.PrintWriter(process.getOutputStream)
+            it.foreach(stdinWriter.println)
+            stdinWriter.close()
+          case Right(_) =>
+            // No stdin needed when reading from file
+            process.getOutputStream.close()
+        }
+
+        // Read stdout in a separate thread
+        val stdoutThread = new Thread(() => {
+          val reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream))
+          var line: String = null
+          while ({ line = reader.readLine(); line != null }) {
+            stdoutWriter.println(line)
+          }
+          reader.close()
+        })
+
+        // Read stderr in a separate thread
+        val stderrThread = new Thread(() => {
+          val reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getErrorStream))
+          var line: String = null
+          while ({ line = reader.readLine(); line != null }) {
+            stderrWriter.println(line)
+          }
+          reader.close()
+        })
+
+        stdoutThread.start()
+        stderrThread.start()
+
+        val code = process.waitFor()
+        stdoutThread.join()
+        stderrThread.join()
+        code
       } catch {
         case a: java.io.IOException if a.getMessage().startsWith("Cannot run program") =>
           throw new Exceptions.FirtoolNotFound(a.getMessage())

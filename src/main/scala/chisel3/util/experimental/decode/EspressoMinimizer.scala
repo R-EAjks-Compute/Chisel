@@ -5,6 +5,8 @@ package chisel3.util.experimental.decode
 import chisel3.util.BitPat
 import logger.LazyLogging
 
+import java.io.{BufferedReader, InputStreamReader, PrintWriter}
+
 case object EspressoNotFoundException extends Exception
 
 /** A [[Minimizer]] implementation to use espresso to minimize the [[TruthTable]].
@@ -79,7 +81,25 @@ object EspressoMinimizer extends Minimizer with LazyLogging {
                     |""".stripMargin)
     val output =
       try {
-        os.proc("espresso").call(stdin = input).out.chunks.mkString
+        val pb = new ProcessBuilder("espresso")
+        val process = pb.start()
+
+        // Write input to stdin
+        val stdinWriter = new PrintWriter(process.getOutputStream)
+        stdinWriter.print(input)
+        stdinWriter.close()
+
+        // Read output from stdout
+        val reader = new BufferedReader(new InputStreamReader(process.getInputStream))
+        val result = new StringBuilder
+        var line: String = null
+        while ({ line = reader.readLine(); line != null }) {
+          result.append(line).append("\n")
+        }
+        reader.close()
+
+        process.waitFor()
+        result.toString.stripSuffix("\n")
       } catch {
         case e: java.io.IOException if e.getMessage.contains("error=2, No such file or directory") =>
           throw EspressoNotFoundException
