@@ -39,7 +39,10 @@ object SlangUtils {
       astFile.getAbsolutePath
     )
     val process = new ProcessBuilder(cmd: _*).inheritIO().start()
-    process.waitFor()
+    val exitCode = process.waitFor()
+    if (exitCode != 0) {
+      throw new ChiselException(s"slang failed with exit code $exitCode")
+    }
 
     val source = Source.fromFile(astFile)
     try {

@@ -24,7 +24,8 @@ import firrtl.options.StageUtils.dramaticMessage
 import firrtl.stage.{FirrtlOptions, FirrtlOptionsView}
 import firrtl.{annoSeqToSeq, seqToAnnoSeq, AnnotationSeq, EmittedVerilogCircuit, EmittedVerilogCircuitAnnotation}
 
-import java.io.File
+import java.io.{BufferedReader, ByteArrayOutputStream, File, InputStreamReader, InputStream, PrintWriter}
+import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable
 import scala.util.control.NoStackTrace
 import firrtl.EmittedBtor2CircuitAnnotation
@@ -74,6 +75,26 @@ private object Helpers {
     def info(msg:  String): Unit = logger.info(msg)
     def debug(msg: String): Unit = logger.debug(msg)
     def trace(msg: String): Unit = logger.trace(msg)
+  }
+
+  /** Create a thread that reads all lines from an InputStream and writes them to a PrintWriter.
+    *
+    * @param stream the input stream to read from
+    * @param writer the writer to write lines to
+    * @return a Thread that can be started to begin piping
+    */
+  def pipeStream(stream: InputStream, writer: PrintWriter): Thread = {
+    new Thread(() => {
+      val reader = new BufferedReader(new InputStreamReader(stream))
+      try {
+        var line: String = null
+        while ({ line = reader.readLine(); line != null }) {
+          writer.println(line)
+        }
+      } finally {
+        reader.close()
+      }
+    })
   }
 }
 
@@ -192,14 +213,13 @@ class CIRCT extends Phase {
     }
 
     // FIRRTL is serialized either in memory or to a file
-    val input: Either[Iterable[String], java.nio.file.Path] =
+    val input: Either[Iterable[String], Path] =
       if (circtOptions.dumpFir) {
-        val basePath = java.nio.file.Paths.get(stageOptions.targetDir)
-        val td = if (basePath.isAbsolute) basePath else java.nio.file.Paths.get(System.getProperty("user.dir")).resolve(basePath)
-        java.nio.file.Files.createDirectories(td)
+        val td = Paths.get(stageOptions.targetDir).toAbsolutePath
+        Files.createDirectories(td)
         val filename = firrtlOptions.outputFileName.getOrElse(circuitName)
         val firPath = td.resolve(s"$filename.fir")
-        val writer = new java.io.PrintWriter(firPath.toFile)
+        val writer = new PrintWriter(firPath.toFile)
         try {
           serialization.foreach(writer.println)
         } finally {
@@ -266,44 +286,32 @@ class CIRCT extends Phase {
         })
 
     logger.info(s"""Running CIRCT: '${cmd.mkString(" ")}""" + input.fold(_ => " < $$" + "input'", _ => "'"))
-    val stdoutStream, stderrStream = new java.io.ByteArrayOutputStream
-    val stdoutWriter = new java.io.PrintWriter(stdoutStream)
-    val stderrWriter = new java.io.PrintWriter(stderrStream)
+    val stdoutStream = new ByteArrayOutputStream
+    val stderrStream = new ByteArrayOutputStream
+    val stdoutWriter = new PrintWriter(stdoutStream)
+    val stderrWriter = new PrintWriter(stderrStream)
     val exitValue =
       try {
-        val pb = new java.lang.ProcessBuilder(cmd: _*)
+        val pb = new ProcessBuilder(cmd: _*)
         val process = pb.start()
 
         // Handle stdin - write input to process if needed
         input match {
           case Left(it) =>
-            val stdinWriter = new java.io.PrintWriter(process.getOutputStream)
-            it.foreach(stdinWriter.println)
-            stdinWriter.close()
+            val stdinWriter = new PrintWriter(process.getOutputStream)
+            try {
+              it.foreach(stdinWriter.println)
+            } finally {
+              stdinWriter.close()
+            }
           case Right(_) =>
             // No stdin needed when reading from file
             process.getOutputStream.close()
         }
 
-        // Read stdout in a separate thread
-        val stdoutThread = new Thread(() => {
-          val reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream))
-          var line: String = null
-          while ({ line = reader.readLine(); line != null }) {
-            stdoutWriter.println(line)
-          }
-          reader.close()
-        })
-
-        // Read stderr in a separate thread
-        val stderrThread = new Thread(() => {
-          val reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getErrorStream))
-          var line: String = null
-          while ({ line = reader.readLine(); line != null }) {
-            stderrWriter.println(line)
-          }
-          reader.close()
-        })
+        // Read stdout and stderr in separate threads to prevent deadlock
+        val stdoutThread = pipeStream(process.getInputStream, stdoutWriter)
+        val stderrThread = pipeStream(process.getErrorStream, stderrWriter)
 
         stdoutThread.start()
         stderrThread.start()
@@ -313,8 +321,8 @@ class CIRCT extends Phase {
         stderrThread.join()
         code
       } catch {
-        case a: java.io.IOException if a.getMessage().startsWith("Cannot run program") =>
-          throw new Exceptions.FirtoolNotFound(a.getMessage())
+        case e: java.io.IOException if e.getMessage.startsWith("Cannot run program") =>
+          throw new Exceptions.FirtoolNotFound(e.getMessage)
       }
     stdoutWriter.close()
     stderrWriter.close()

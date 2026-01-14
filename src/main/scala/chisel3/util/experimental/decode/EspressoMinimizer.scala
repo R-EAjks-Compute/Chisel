@@ -86,22 +86,42 @@ object EspressoMinimizer extends Minimizer with LazyLogging {
 
         // Write input to stdin
         val stdinWriter = new PrintWriter(process.getOutputStream)
-        stdinWriter.print(input)
-        stdinWriter.close()
+        try {
+          stdinWriter.print(input)
+        } finally {
+          stdinWriter.close()
+        }
 
         // Read output from stdout
-        val reader = new BufferedReader(new InputStreamReader(process.getInputStream))
+        val stdoutReader = new BufferedReader(new InputStreamReader(process.getInputStream))
+        val stderrReader = new BufferedReader(new InputStreamReader(process.getErrorStream))
         val result = new StringBuilder
-        var line: String = null
-        while ({ line = reader.readLine(); line != null }) {
-          result.append(line).append("\n")
+        val errors = new StringBuilder
+        try {
+          var line: String = null
+          while ({ line = stdoutReader.readLine(); line != null }) {
+            result.append(line).append("\n")
+          }
+        } finally {
+          stdoutReader.close()
         }
-        reader.close()
+        try {
+          var line: String = null
+          while ({ line = stderrReader.readLine(); line != null }) {
+            errors.append(line).append("\n")
+          }
+        } finally {
+          stderrReader.close()
+        }
 
-        process.waitFor()
+        val exitCode = process.waitFor()
+        if (exitCode != 0) {
+          throw new RuntimeException(s"espresso failed with exit code $exitCode: ${errors.toString}")
+        }
         result.toString.stripSuffix("\n")
       } catch {
-        case e: java.io.IOException if e.getMessage.contains("error=2, No such file or directory") =>
+        case e: java.io.IOException if e.getMessage.contains("Cannot run program") ||
+          e.getMessage.contains("error=2, No such file or directory") =>
           throw EspressoNotFoundException
       }
     logger.trace(s"""espresso output table:

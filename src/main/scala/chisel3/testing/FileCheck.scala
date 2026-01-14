@@ -105,8 +105,7 @@ trait FileCheck {
       Files.write(checkFile, check.getBytes)
       Files.write(inputFile, input.getBytes)
 
-      val stdoutStream, stderrStream = new java.io.ByteArrayOutputStream
-      val stdoutWriter = new PrintWriter(stdoutStream)
+      val stderrStream = new ByteArrayOutputStream
       val stderrWriter = new PrintWriter(stderrStream)
 
       val cmd = Seq("FileCheck", checkFile.toString) ++ fileCheckArgs
@@ -114,30 +113,27 @@ trait FileCheck {
         try {
           val pb = new ProcessBuilder(cmd: _*)
           pb.redirectInput(inputFile.toFile)
+          // Merge stderr into stdout to simplify reading and avoid potential deadlocks
+          pb.redirectErrorStream(true)
           val process = pb.start()
 
-          // Read stdout
-          val stdoutReader = new BufferedReader(new InputStreamReader(process.getInputStream))
-          var line: String = null
-          while ({ line = stdoutReader.readLine(); line != null }) {
-            stdoutWriter.println(line)
+          // Read combined stdout/stderr
+          val reader = new BufferedReader(new InputStreamReader(process.getInputStream))
+          try {
+            var line: String = null
+            while ({ line = reader.readLine(); line != null }) {
+              stderrWriter.println(line)
+            }
+          } finally {
+            reader.close()
           }
-          stdoutReader.close()
-
-          // Read stderr
-          val stderrReader = new BufferedReader(new InputStreamReader(process.getErrorStream))
-          while ({ line = stderrReader.readLine(); line != null }) {
-            stderrWriter.println(line)
-          }
-          stderrReader.close()
 
           val code = process.waitFor()
           (code, cmd)
         } catch {
-          case a: IOException if a.getMessage.startsWith("Cannot run program") =>
-            throw new FileCheck.Exceptions.NotFound(a.getMessage)
+          case e: IOException if e.getMessage.startsWith("Cannot run program") =>
+            throw new FileCheck.Exceptions.NotFound(e.getMessage)
         }
-      stdoutWriter.close()
       stderrWriter.close()
 
       if (exitCode == 0) {
