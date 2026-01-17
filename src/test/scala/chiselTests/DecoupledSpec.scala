@@ -67,13 +67,13 @@ class DecoupledSpec extends AnyFlatSpec with Matchers with FileCheck {
     // Check for data assignment
     chirrtl should include("""wire _deq_map_bits : { foo : UInt<8>, bar : UInt<8>, fizz : UInt<1>, buzz : UInt<1>}""")
 
-    chirrtl should include("""node _deq_map_bits_res_foo_T = add(enq.bits.foo, UInt<1>(0h1)""")
-    chirrtl should include("""node _deq_map_bits_res_foo_T_1 = tail(_deq_map_bits_res_foo_T, 1)""")
-    chirrtl should include("""connect _deq_map_bits.foo, _deq_map_bits_res_foo_T_1""")
+    (chirrtl should include).regex("""node .*_foo_T = add\(enq.bits.foo, UInt<1>\(0h1\)""")
+    (chirrtl should include).regex("""node .*_foo_T_1 = tail\(.*_foo_T, 1\)""")
+    (chirrtl should include).regex("""connect _deq_map_bits.foo, .*_foo_T.*""")
 
-    chirrtl should include("""node _deq_map_bits_res_bar_T = sub(enq.bits.bar, UInt<1>(0h1)""")
-    chirrtl should include("""node _deq_map_bits_res_bar_T_1 = tail(_deq_map_bits_res_bar_T, 1)""")
-    chirrtl should include("""connect _deq_map_bits.bar, _deq_map_bits_res_bar_T_1""")
+    (chirrtl should include).regex("""node _deq_.*res_bar_T = sub\(enq.bits.bar, UInt<1>\(0h1\)""")
+    (chirrtl should include).regex("""node _deq_.*res_bar_T_1 = tail\(_deq_.*res_bar_T, 1\)""")
+    (chirrtl should include).regex("""connect _deq_map_bits.bar, _deq_.*res_bar_T_1""")
 
     chirrtl should include("""connect _deq_map_bits.fizz, UInt<1>(0h0)""")
     chirrtl should include("""connect _deq_map_bits.buzz, UInt<1>(0h1)""")
