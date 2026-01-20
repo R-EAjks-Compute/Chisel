@@ -325,6 +325,70 @@ trait Chisel extends CrossSbtModule with HasScala2MacroAnno with HasScalaPlugin 
 
     override def testForkGrouping = discoveredTestClasses().grouped(8).toSeq
   }
+
+  def unitTest(args: String*): Task.Command[Unit] = {
+    // Parse command line arguments.
+    val chiselArgs = collection.mutable.ArrayBuffer[String]()
+    val firtoolArgs = collection.mutable.ArrayBuffer[String]()
+    val circtTestArgs = collection.mutable.ArrayBuffer[String]()
+    var printHelp = false
+    val argPattern = "(--?)([GCT])(.+)".r
+    for (arg <- args) {
+      arg match {
+        case "-h" | "--help" =>
+          println("""
+            |Options:
+            |  -h, --help      Show this help message
+            |  -G|--G<arg>     Pass argument to chisel3.UnitTests main
+            |  -C|--C<arg>     Pass argument to firtool
+            |  -T|--T<arg>     Pass argument to circt-test
+            |""".stripMargin.trim)
+          printHelp = true
+        case argPattern(dashes, prefix, rest) =>
+          val targetArgs = prefix match {
+            case "G" => chiselArgs
+            case "C" => firtoolArgs
+            case "T" => circtTestArgs
+          }
+          targetArgs += dashes + rest
+        case _ => throw new IllegalArgumentException(s"Unknown argument: $arg")
+      }
+    }
+    if (printHelp)
+      return Task.Command(())
+
+    Task.Command {
+      val firFile = Task.dest / "unit_tests.fir"
+      val mlirFile = Task.dest / "unit_tests.mlir"
+
+      // Run the `chisel3.UnitTests` main to generate a FIR file containing all
+      // tests.
+      runner().run(
+        args = Seq("-o", firFile.toString) ++ chiselArgs,
+        mainClass = "chisel3.UnitTests",
+        workingDir = Task.dest
+      )
+
+      // Compile the FIR file to MLIR using firtool.
+      os.proc(
+        Seq(
+          (circt.binDir() / "firtool").toString,
+          "--ir-hw",
+          firFile.toString,
+          "-o", mlirFile.toString,
+          "--default-layer-specialization=enable"
+        ) ++ firtoolArgs
+      ).call(cwd = Task.dest, stdout = os.Inherit, stderr = os.Inherit)
+
+      // Run all tests in the MLIR file using circt-test.
+      os.proc(
+        Seq(
+          (circt.binDir() / "circt-test").toString,
+          mlirFile.toString
+        ) ++ circtTestArgs
+      ).call(cwd = Task.dest, stdout = os.Inherit, stderr = os.Inherit)
+    }
+  }
 }
 
 object unipublish extends Cross[Unipublish](v.scalaCrossVersions)
